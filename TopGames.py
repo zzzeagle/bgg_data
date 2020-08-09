@@ -35,7 +35,6 @@ def browse_bgg(url, xpath, pages):
 def call_bgg_api(api, ids):
     """Use the BGG API to get an XML file with the data for games with the IDs"""
     game_ids = ','.join(ids)
-    print(ids)
     data = requests.get(api + game_ids)
 
     with open('game_data.xml', 'wb') as f:
@@ -163,14 +162,14 @@ def process_family(item, family_id):
     links = []
 
     family_name = item.findall("./name/[@type='primary']")[0].attrib['value']
-    print(item.attrib['id'])
     for link in item.findall("./link"):
         game_link = {}
         game_link['family_id'] = family_id
+        game_link['family_name'] = family_name
         game_link['game_id'] = link.attrib['id']
         game_link['name'] = link.attrib['value']
         links.append(game_link)
-    append_to_csv(links, 'family', family_id + '.csv')
+    append_to_csv(links, 'family', 'families.csv')
 
 
 def main():
@@ -192,7 +191,6 @@ def main():
 
     # Scrape the board game families pages to get a list of boardgame family ids
     families = browse_bgg('https://boardgamegeek.com/browse/boardgamefamily/page/',  '//*[contains(@class,"forum_table")]//a/@href', 2)
-    print(families)
     number_of_families = len(families)
 
     k = 0

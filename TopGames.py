@@ -3,29 +3,40 @@ import csv
 import os
 from lxml import html
 import xml.etree.ElementTree as ET
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
-def get_top_games(pages):
-    """Retyrn a list of BGG ids for the top n pages"""
+def browse_bgg(url, xpath, pages):
+    """Return a list of BGG ids for the top n pages"""
     i: int = 1
     results = []
+
+    # If pages = 0, then get all pages for the URL
+    if pages == 0:
+        page = requests.get(str(url) + str(i))
+        tree = html.fromstring(page.content)
+        # Find the last page number on the first page
+        pages = int(tree.xpath('//*[@title="last page"]/text()')[1][1:-1])
+
     while i < pages:
         # Get the list of top games from BGG
-        page = requests.get('https://boardgamegeek.com/browse/boardgame/page/' + str(i))
+        page = requests.get(str(url) + str(i))
         tree = html.fromstring(page.content)
         # Select the item URL which includes the item ID
-        games = tree.xpath('//*[contains(@class,"collection_objectname")]//a/@href')
+        games = tree.xpath(xpath)
         results = results + games
         i = i + 1
-    # The url selected is /boargame/ID/name. Select just the ID.
+    # The url selected is /boardgame/ID/name. Select just the ID.
     ids = list(map(lambda x: x.split('/')[2], results))
     return ids
 
 
-def load_game_stats(ids):
+def call_bgg_api(api, ids):
     """Use the BGG API to get an XML file with the data for games with the IDs"""
     game_ids = ','.join(ids)
-    data = requests.get('https://api.geekdo.com/xmlapi2/thing?type=boardgame&stats=1&id=' + game_ids)
+    print(ids)
+    data = requests.get(api + game_ids)
 
     with open('game_data.xml', 'wb') as f:
         f.write(data.content)
@@ -69,7 +80,7 @@ def process_game_data(item):
         game[att] = item.find(att).attrib['value']
 
     games.append(game)
-    append_to_csv(games, 'game_data.csv')
+    append_to_csv(games, '', 'game_data.csv')
 
 
 def process_link_data(game):
@@ -100,7 +111,7 @@ def get_links(item, link_type):
 
     # Check to see if there are any links, otherwise we would error.
     if links:
-        append_to_csv(links, link_type + '.csv')
+        append_to_csv(links, 'links', link_type + '.csv')
 
 
 def process_rank_data(item):
@@ -118,17 +129,20 @@ def process_rank_data(item):
             rank_info['value'] = rank.attrib['value']
             rank_info['bayesaverage'] = rank.attrib['bayesaverage']
             rank_data.append(rank_info)
-            append_to_csv(rank_data, rank_type + ".csv")
+            append_to_csv(rank_data, 'ranks', rank_type + ".csv")
 
 
-def append_to_csv(games, filename):
+def append_to_csv(games, folder, filename):
     """Function to add data to a CSV
         Creates the file if it doesn't exist"""
     # Make output folder if it doesn't exist
     if not os.path.exists('output'):
         os.makedirs('output')
+    path = os.path.join('output', folder)
+    if not os.path.exists(path):
+        os.makedirs(path)
 
-    file_location = 'output/' + filename
+    file_location = os.path.join(path, filename)
 
     # Check if the file exists, so we know if we need to write headers later
     file_exists = os.path.isfile(file_location)
@@ -145,22 +159,51 @@ def append_to_csv(games, filename):
         writer.writerows(games)
 
 
+def process_family(item, family_id):
+    links = []
+
+    family_name = item.findall("./name/[@type='primary']")[0].attrib['value']
+    print(item.attrib['id'])
+    for link in item.findall("./link"):
+        game_link = {}
+        game_link['family_id'] = family_id
+        game_link['game_id'] = link.attrib['id']
+        game_link['name'] = link.attrib['value']
+        links.append(game_link)
+    append_to_csv(links, 'family', family_id + '.csv')
+
+
 def main():
     # Scrape BGG browse page to top n*100 games by rank
-    top_games = get_top_games(10)
+    top_games = browse_bgg('https://boardgamegeek.com/browse/boardgame/page/', '//*[contains(@class,"collection_objectname")]//a/@href', 2)
 
     # Get number of games
     number_of_games = len(top_games)
 
     i = 0
     while i < number_of_games:
-        load_game_stats(top_games[i:i + 400])
+        call_bgg_api('https://api.geekdo.com/xmlapi2/thing?type=boardgame&stats=1&id=', top_games[i:i + 400])
         game_data = parse_xml('game_data.xml')
         for game in game_data.findall("./item"):
             process_game_data(game)
             process_rank_data(game)
             process_link_data(game)
         i = i + 400
+
+    # Scrape the board game families pages to get a list of boardgame family ids
+    families = browse_bgg('https://boardgamegeek.com/browse/boardgamefamily/page/',  '//*[contains(@class,"forum_table")]//a/@href', 2)
+    print(families)
+    number_of_families = len(families)
+
+    k = 0
+    while k < number_of_families:
+        call_bgg_api('https://api.geekdo.com/xmlapi2/family?type=boardgamefamily&id=', families[k:k+400])
+        family_data = parse_xml('game_data.xml')
+        for family in family_data.findall("./item"):
+            family_id = family.attrib['id']
+            process_family(family, family_id)
+        k = k + 400
+
 
 
 if __name__ == "__main__":

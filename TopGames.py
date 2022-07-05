@@ -1,10 +1,17 @@
+from time import sleep
 import requests
 import csv
 import os
+from tqdm import tqdm
 from lxml import html
+from datetime import datetime
 import xml.etree.ElementTree as ET
 import matplotlib.pyplot as plt
 import seaborn as sns
+import logging
+import sys
+
+logging.basicConfig(handlers=[logging.FileHandler('debug.log', 'w', 'utf-8')])
 
 
 def browse_bgg(url, xpath, pages):
@@ -35,7 +42,15 @@ def browse_bgg(url, xpath, pages):
 def call_bgg_api(api, ids):
     """Use the BGG API to get an XML file with the data for games with the IDs"""
     game_ids = ','.join(ids)
-    data = requests.get(api + game_ids)
+
+    for i in range(0,10):
+        while True:
+            try:
+                data = requests.get(api + game_ids)
+                break
+            except:
+                continue
+
 
     with open('game_data.xml', 'wb') as f:
         f.write(data.content)
@@ -56,6 +71,9 @@ def process_game_data(item):
     game = {}
     game['id'] = item.attrib['id']
     game['name'] = item.findall("./name/[@type='primary']")[0].attrib['value']
+    
+    logging.debug('Processing Game %s Data: %s', str(game['id']), game['name'] , )
+    
     attributes = ['./minplayers',
                   './maxplayers',
                   './playingtime',
@@ -75,8 +93,17 @@ def process_game_data(item):
                   './statistics/ratings/numweights',
                   './statistics/ratings/averageweight',
                   './yearpublished']
+
     for att in attributes:
-        game[att] = item.find(att).attrib['value']
+        try:
+            game[att] = item.find(att).attrib['value']
+        except:
+            game[att] = None
+    
+    try:
+        game['image'] = item.find('image').text
+    except:
+        game['image'] = None
 
     games.append(game)
     append_to_csv(games, '', 'game_data.csv')
@@ -87,6 +114,7 @@ def process_link_data(game):
     These links are one-to-many. For each link type create a csv with the data."""
     # Link items to select. Each game may have more than one item for each of these links.
     # So for each link a CSV is created with that data.
+    # print('Processing Link Data')
     links = ['boardgamecategory',
              'boardgamemechanic',
              'boardgamefamily',
@@ -101,12 +129,15 @@ def process_link_data(game):
 def get_links(item, link_type):
     """Get each link of the link type and save to a CSV file"""
     links = []
+    order = 1
     for link in item.findall("./link/[@type='" + link_type + "']"):
         link_item = {}
+        link_item['order'] = order
         link_item['gameId'] = item.attrib['id']
         link_item['id'] = link.attrib['id']
         link_item['value'] = link.attrib['value']
         links.append(link_item)
+        order = order + 1
 
     # Check to see if there are any links, otherwise we would error.
     if links:
@@ -117,6 +148,8 @@ def process_rank_data(item):
     """Process the rank data for a game
         A game an have more than one ranking
         Make a new file for each rank type"""
+    
+    # print('Processing Rank Data')
     ranks = item.findall('./statistics/ratings/ranks/rank')
     game_id = item.attrib['id']
     if ranks:
@@ -134,10 +167,11 @@ def process_rank_data(item):
 def append_to_csv(games, folder, filename):
     """Function to add data to a CSV
         Creates the file if it doesn't exist"""
+
     # Make output folder if it doesn't exist
-    if not os.path.exists('output'):
-        os.makedirs('output')
-    path = os.path.join('output', folder)
+    if not os.path.exists(outputPath):
+        os.makedirs(outputPath)
+    path = os.path.join(outputPath, folder)
     if not os.path.exists(path):
         os.makedirs(path)
 
@@ -159,6 +193,7 @@ def append_to_csv(games, folder, filename):
 
 
 def process_family(item, family_id):
+
     links = []
 
     family_name = item.findall("./name/[@type='primary']")[0].attrib['value']
@@ -173,34 +208,55 @@ def process_family(item, family_id):
 
 
 def main():
+
+    datetimeString = datetime.now()
+    datetimeString = datetimeString.strftime("%Y%m%d_%H%M")
+    global outputPath 
+    outputPath = 'output_'+datetimeString
+
     # Scrape BGG browse page to top n*100 games by rank
-    top_games = browse_bgg('https://boardgamegeek.com/browse/boardgame/page/', '//*[contains(@class,"collection_objectname")]//a/@href', 2)
+    top_games = browse_bgg('https://boardgamegeek.com/browse/boardgame/page/', '//*[contains(@class,"collection_objectname")]//a/@href', 200)
 
     # Get number of games
     number_of_games = len(top_games)
 
+    # Create game id index
+    gameIndex = []
     i = 0
     while i < number_of_games:
-        call_bgg_api('https://api.geekdo.com/xmlapi2/thing?type=boardgame&stats=1&id=', top_games[i:i + 400])
+        gameIndex.append(top_games[i:i + 400])
+        i = i+400
+ 
+    print('Getting Games')
+    for games in tqdm(gameIndex):
+        call_bgg_api('https://api.geekdo.com/xmlapi2/thing?type=boardgame&stats=1&id=', games)
+
         game_data = parse_xml('game_data.xml')
         for game in game_data.findall("./item"):
+            name = game.findall("./name/[@type='primary']")[0].attrib['value']
+            # print('Processing game data for: ', name)
             process_game_data(game)
             process_rank_data(game)
             process_link_data(game)
-        i = i + 400
 
     # Scrape the board game families pages to get a list of boardgame family ids
-    families = browse_bgg('https://boardgamegeek.com/browse/boardgamefamily/page/',  '//*[contains(@class,"forum_table")]//a/@href', 2)
+    families = browse_bgg('https://boardgamegeek.com/browse/boardgamefamily/page/',  '//*[contains(@class,"forum_table")]//a/@href', 0)
     number_of_families = len(families)
 
-    k = 0
-    while k < number_of_families:
-        call_bgg_api('https://api.geekdo.com/xmlapi2/family?type=boardgamefamily&id=', families[k:k+400])
+    # Create family index
+    familyIndex = []
+    i = 0
+    while i < number_of_families:
+        familyIndex.append(families[i:i + 400])
+        i = i+400
+
+    print('Getting game family data')
+    for gameFamilies in tqdm(familyIndex):
+        call_bgg_api('https://api.geekdo.com/xmlapi2/family?type=boardgamefamily&id=', gameFamilies)
         family_data = parse_xml('game_data.xml')
         for family in family_data.findall("./item"):
             family_id = family.attrib['id']
             process_family(family, family_id)
-        k = k + 400
 
 
 
